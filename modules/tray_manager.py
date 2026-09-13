@@ -1,6 +1,9 @@
+import os
 import threading
 from PIL import Image, ImageDraw
 import pystray
+
+ICON_FILE = "app.ico"
 
 
 def generate_app_icon():
@@ -19,7 +22,7 @@ def generate_app_icon():
     draw.rounded_rectangle([26, 56, 40, 88], radius=6, fill="#FFFFFF")
     draw.rounded_rectangle([88, 56, 102, 88], radius=6, fill="#FFFFFF")
 
-    # 4. Sound Wave Bars (Center audio visualizer)
+    # 4. Center Soundwave Bars
     bars = [
         ((48, 66), (48, 78)),
         ((56, 58), (56, 86)),
@@ -33,6 +36,18 @@ def generate_app_icon():
     return image
 
 
+def ensure_icon_exists():
+    """Ensures a multi-size Windows .ico file is available on disk."""
+    if not os.path.exists(ICON_FILE):
+        img = generate_app_icon()
+        img.save(
+            ICON_FILE,
+            format="ICO",
+            sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+        )
+    return ICON_FILE
+
+
 class TrayManager:
     def __init__(self, root, on_quit_callback):
         self.root = root
@@ -40,12 +55,15 @@ class TrayManager:
         self.icon = None
 
     def setup(self):
+        ensure_icon_exists()
+        # Use Image.open on the consistent icon source
+        tray_image = Image.open(ICON_FILE)
         menu = pystray.Menu(
             pystray.MenuItem("Show Window", self.show_window, default=True),
             pystray.MenuItem("Exit Router", self.quit_app),
         )
         self.icon = pystray.Icon(
-            "AudioRouter", generate_app_icon(), "Windows Multi-Audio Router", menu
+            "AudioRouter", tray_image, "Windows Multi-Audio Router", menu
         )
         threading.Thread(target=self.icon.run, daemon=True).start()
 

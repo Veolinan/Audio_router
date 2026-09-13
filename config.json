@@ -1,20 +1,94 @@
 {
-    "Headphones (oraimo SpaceBuds Neo+)": {
-        "selected": true,
-        "volume": 0.618421052631579,
-        "delay": 0,
-        "pan": 0.04040404040404044
+    "devices": {
+        "Headphones (oraimo SpaceBuds Neo+)": {
+            "selected": false,
+            "volume": 0.618421052631579,
+            "delay": 0,
+            "pan": 0.04040404040404044,
+            "muted": false,
+            "alias": ""
+        },
+        "Speakers (Conexant ISST Audio)": {
+            "selected": false,
+            "volume": 0.11842105263157894,
+            "delay": 200,
+            "pan": 0.0,
+            "muted": false,
+            "alias": ""
+        },
+        "Headphones (oraimo SpaceBuds Neo)": {
+            "selected": false,
+            "volume": 1.0,
+            "delay": 0,
+            "pan": 0.0,
+            "muted": false,
+            "alias": ""
+        },
+        "Microsoft Sound Mapper - Output": {
+            "selected": false,
+            "volume": 1.0,
+            "delay": 0,
+            "pan": 0.0,
+            "muted": true,
+            "alias": ""
+        },
+        "Headphones (oraimo SpaceBuds Ne": {
+            "selected": false,
+            "volume": 1.0,
+            "delay": 0,
+            "pan": 0.20000000000000018,
+            "muted": true,
+            "alias": ""
+        },
+        "Primary Sound Driver": {
+            "selected": false,
+            "volume": 0.8499999999999999,
+            "delay": 0,
+            "pan": -0.19999999999999996,
+            "muted": true,
+            "alias": ""
+        },
+        "Output 1 (Conexant ISST Audio output)": {
+            "selected": false,
+            "volume": 1.0,
+            "delay": 0,
+            "pan": 0.0,
+            "muted": false,
+            "alias": ""
+        },
+        "Output 2 (Conexant ISST Audio output)": {
+            "selected": false,
+            "volume": 1.0,
+            "delay": 0,
+            "pan": 0.0,
+            "muted": false,
+            "alias": ""
+        },
+        "Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0\r\n;(oraimo SpaceBuds Neo+))": {
+            "selected": false,
+            "volume": 1.0,
+            "delay": 0,
+            "pan": 0.0,
+            "muted": false,
+            "alias": ""
+        },
+        "Headphones ()": {
+            "selected": false,
+            "volume": 1.0,
+            "delay": 0,
+            "pan": 0.0,
+            "muted": false,
+            "alias": ""
+        },
+        "Headset (@System32\\drivers\\bthhfenum.sys,#2;%1 Hands-Free%0\r\n;(oraimo SpaceBuds Neo))": {
+            "selected": false,
+            "volume": 1.0,
+            "delay": 0,
+            "pan": 0.0,
+            "muted": false,
+            "alias": ""
+        }
     },
-    "Speakers (Conexant ISST Audio)": {
-        "selected": true,
-        "volume": 0.11842105263157894,
-        "delay": 200,
-        "pan": 0.0
-    },
-    "Headphones (oraimo SpaceBuds Neo)": {
-        "selected": false,
-        "volume": 1.0,
-        "delay": 0,
-        "pan": 0.0
-    }
+    "auto_mute_speakers": true,
+    "start_on_boot": true
 }

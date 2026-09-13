@@ -1,14 +1,28 @@
 {
-    "Headphones (oraimo SpaceBuds Neo+)": {
-        "selected": true,
-        "volume": 0.993421052631579,
-        "delay": 0,
-        "pan": 0.0
+    "devices": {
+        "Headphones (oraimo SpaceBuds Neo+)": {
+            "selected": true,
+            "volume": 0.993421052631579,
+            "delay": 0,
+            "pan": 0.0
+        },
+        "Speakers (Conexant ISST Audio)": {
+            "selected": true,
+            "volume": 0.23717948717948717,
+            "delay": 300,
+            "pan": 0.0,
+            "muted": false,
+            "alias": ""
+        },
+        "Headphones (oraimo SpaceBuds Neo)": {
+            "selected": false,
+            "volume": 1.0,
+            "delay": 0,
+            "pan": 0.0,
+            "muted": false,
+            "alias": ""
+        }
     },
-    "Speakers (Conexant ISST Audio)": {
-        "selected": true,
-        "volume": 0.10526315789473684,
-        "delay": 300,
-        "pan": 0.0
-    }
+    "auto_mute_speakers": true,
+    "start_on_boot": true
 }

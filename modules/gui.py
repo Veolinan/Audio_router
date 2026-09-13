@@ -2,14 +2,13 @@ import os
 import sys
 import ctypes
 import customtkinter as ctk
-from tkinter import messagebox
-from PIL import ImageTk
+from tkinter import simpledialog, messagebox
 import sounddevice as sd
-import keyboard
 
 from .audio_engine import AudioRouterEngine, play_test_chime
-from .config_manager import load_config, save_config
-from .tray_manager import TrayManager, generate_app_icon
+from .config_manager import load_config, save_config, set_windows_autostart
+from .tray_manager import TrayManager, ensure_icon_exists
+from .sync_wizard import SyncWizardModal
 
 ctk.set_appearance_mode("Dark")
 ctk.set_default_color_theme("blue")
@@ -20,24 +19,29 @@ class ModernAudioRouterApp(ctk.CTk):
         super().__init__()
         self.title("Windows Multi-Audio Router")
 
-        # Set taskbar icon explicitly in Windows
+        # --- Consistent Windows Taskbar, Alt+Tab, and Window Icon ---
+        icon_path = ensure_icon_exists()
         try:
             myappid = "audiorouter.multidevice.pro.1"
             ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(myappid)
-            self.icon_image = ImageTk.PhotoImage(generate_app_icon())
-            self.iconphoto(False, self.icon_image)
         except Exception:
             pass
 
-        # --- Dynamic Monitor Centering (Compact Dimensions) ---
-        app_width = 760
+        try:
+            if os.path.exists(icon_path):
+                self.iconbitmap(icon_path)
+        except Exception as e:
+            print(f"[Icon Warning]: {e}")
+
+        # --- Dynamic Monitor Centering ---
+        app_width = 780
         app_height = 580
         screen_width = self.winfo_screenwidth()
         screen_height = self.winfo_screenheight()
         center_x = int((screen_width / 2) - (app_width / 2))
         center_y = int((screen_height / 2) - (app_height / 2))
         self.geometry(f"{app_width}x{app_height}+{center_x}+{center_y}")
-        self.minsize(680, 480)
+        self.minsize(700, 480)
 
         self.wasapi_idx = self._get_wasapi_index()
         self.engine = AudioRouterEngine(
@@ -53,18 +57,10 @@ class ModernAudioRouterApp(ctk.CTk):
         self._setup_ui()
         self.refresh_devices()
 
-        # System Tray Initialization
         self.tray = TrayManager(self, on_quit_callback=self.safe_exit)
         self.tray.setup()
         self.protocol("WM_DELETE_WINDOW", self.tray.hide_window)
 
-        # Global Hotkey (Ctrl + Alt + S to start/stop audio routing globally)
-        try:
-            keyboard.add_hotkey("ctrl+alt+s", lambda: self.after(0, self.toggle_routing))
-        except Exception as e:
-            print(f"[Hotkey Warning] Could not register hotkey: {e}")
-
-        # Periodic check for paired/disconnected Bluetooth endpoints
         self.after(4000, self._auto_poll_devices)
 
     def _get_wasapi_index(self):
@@ -78,61 +74,80 @@ class ModernAudioRouterApp(ctk.CTk):
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
 
-        # 1. Header Frame
+        # Header Frame
         header = ctk.CTkFrame(self, corner_radius=10, fg_color="#212121")
         header.grid(row=0, column=0, padx=14, pady=(12, 6), sticky="ew")
-        header.grid_columnconfigure(1, weight=1)
+        header.grid_columnconfigure(3, weight=1)
 
         self.btn_refresh = ctk.CTkButton(
             header,
-            text="↻ Rescan Devices",
-            width=110,
+            text="↻ Rescan",
+            width=90,
             height=28,
             font=ctk.CTkFont(size=11, weight="bold"),
             command=self.refresh_devices,
         )
-        self.btn_refresh.grid(row=0, column=0, padx=10, pady=8)
+        self.btn_refresh.grid(row=0, column=0, padx=8, pady=8)
 
-        # Buffer Dropdown Selector
-        buffer_frame = ctk.CTkFrame(header, fg_color="transparent")
-        buffer_frame.grid(row=0, column=1, padx=6, sticky="w")
-
-        ctk.CTkLabel(buffer_frame, text="Buffer:", font=ctk.CTkFont(size=10), text_color="#A0A0A0").pack(side="left", padx=4)
+        ctk.CTkLabel(header, text="Buffer:", font=ctk.CTkFont(size=10), text_color="#A0A0A0").grid(row=0, column=1, padx=(4, 2))
         self.cmb_buffer = ctk.CTkComboBox(
-            buffer_frame,
-            values=["512 (Ultra-Low)", "1024 (Balanced)", "2048 (Stable)", "4096 (High Buffer)"],
-            width=140,
+            header,
+            values=["512 (Ultra-Low)", "1024 (Balanced)", "2048 (Stable)", "4096 (High)"],
+            width=130,
             height=26,
             font=ctk.CTkFont(size=10),
         )
         self.cmb_buffer.set("1024 (Balanced)")
-        self.cmb_buffer.pack(side="left")
+        self.cmb_buffer.grid(row=0, column=2, padx=4)
 
-        # Global Hotkey Tip Label
-        ctk.CTkLabel(
-            header, text="[Ctrl+Alt+S]", font=ctk.CTkFont(size=10), text_color="#666666"
-        ).grid(row=0, column=2, padx=4)
+        # Options Checkboxes
+        self.auto_mute_var = ctk.BooleanVar(value=self.config_data.get("auto_mute_speakers", False))
+        self.chk_auto_mute = ctk.CTkCheckBox(
+            header,
+            text="Auto-Mute Speakers",
+            font=ctk.CTkFont(size=11),
+            variable=self.auto_mute_var,
+            command=self._on_setting_changed,
+        )
+        self.chk_auto_mute.grid(row=0, column=4, padx=8)
+
+        self.autostart_var = ctk.BooleanVar(value=self.config_data.get("start_on_boot", False))
+        self.chk_autostart = ctk.CTkCheckBox(
+            header,
+            text="Start on Boot",
+            font=ctk.CTkFont(size=11),
+            variable=self.autostart_var,
+            command=self._toggle_autostart,
+        )
+        self.chk_autostart.grid(row=0, column=5, padx=8)
 
         self.lbl_status = ctk.CTkLabel(
-            header, text="● Inactive", text_color="#888888", font=ctk.CTkFont(size=12, weight="bold")
+            header,
+            text="● Inactive",
+            text_color="#888888",
+            font=ctk.CTkFont(size=12, weight="bold"),
         )
-        self.lbl_status.grid(row=0, column=3, padx=14, pady=8)
+        self.lbl_status.grid(row=0, column=6, padx=14, pady=8)
 
-        # 2. Master VU Meter
+        # Master VU Signal Meter
         vu_frame = ctk.CTkFrame(self, corner_radius=8, fg_color="#181818")
         vu_frame.grid(row=1, column=0, padx=14, pady=(0, 6), sticky="ew")
         vu_frame.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(vu_frame, text="Master Signal", font=ctk.CTkFont(size=10), text_color="#A0A0A0").grid(row=0, column=0, padx=(10, 8), pady=4)
+        ctk.CTkLabel(
+            vu_frame, text="Signal", font=ctk.CTkFont(size=11), text_color="#A0A0A0"
+        ).grid(row=0, column=0, padx=(10, 8), pady=4)
 
-        self.master_vu = ctk.CTkProgressBar(vu_frame, height=6, corner_radius=3, progress_color="#00BCF2")
+        self.master_vu = ctk.CTkProgressBar(
+            vu_frame, height=6, corner_radius=3, progress_color="#1f6aa5"
+        )
         self.master_vu.grid(row=0, column=1, padx=(0, 14), pady=4, sticky="ew")
         self.master_vu.set(0.0)
 
-        # 3. Scrollable Device Target Container
+        # Scrollable Device Container
         self.scrollable = ctk.CTkScrollableFrame(
             self,
-            label_text="Active Playback Targets",
+            label_text="Available Playback Endpoints",
             label_font=ctk.CTkFont(size=12, weight="bold"),
             corner_radius=10,
             fg_color="#181818",
@@ -140,7 +155,7 @@ class ModernAudioRouterApp(ctk.CTk):
         self.scrollable.grid(row=2, column=0, padx=14, pady=4, sticky="nsew")
         self.scrollable.grid_columnconfigure(0, weight=1)
 
-        # 4. Footer
+        # Footer Action Area
         footer = ctk.CTkFrame(self, corner_radius=10, fg_color="#212121")
         footer.grid(row=3, column=0, padx=14, pady=(6, 12), sticky="ew")
         footer.grid_columnconfigure(0, weight=1)
@@ -155,21 +170,24 @@ class ModernAudioRouterApp(ctk.CTk):
         )
         self.btn_toggle.grid(row=0, column=0, padx=10, pady=8, sticky="ew")
 
+    def _toggle_autostart(self):
+        set_windows_autostart(self.autostart_var.get())
+        self._on_setting_changed()
+
     def _update_master_vu(self, rms):
-        val = min(1.0, rms * 4.5)
-        self.after(0, lambda: self.master_vu.set(val))
+        level = min(1.0, rms * 4.5)
+        self.after(0, lambda: self.master_vu.set(level))
 
     def _update_device_vu(self, dev_id, rms):
         if dev_id in self.device_cards:
             meter = self.device_cards[dev_id]["vu_meter"]
-            val = min(1.0, rms * 4.5)
-            self.after(0, lambda: meter.set(val))
+            level = min(1.0, rms * 4.5)
+            self.after(0, lambda: meter.set(level))
 
     def refresh_devices(self):
         if self.engine.is_routing:
             return
 
-        # 1. Force PortAudio to re-enumerate Windows audio endpoints
         try:
             sd._terminate()
             sd._initialize()
@@ -180,41 +198,46 @@ class ModernAudioRouterApp(ctk.CTk):
             w.destroy()
 
         self.device_cards.clear()
-
-        # 2. Query all host APIs and devices
         devices = sd.query_devices()
-        hostapis = sd.query_hostapis()
         self.last_known_devices = [d["name"] for d in devices]
         default_out = sd.default.device[1]
-
         bt_keys = ["bluetooth", "hands-free", "airpods", "buds", "wireless", "headset", "headphones"]
-        
+
+        ignored_names = [
+            "microsoft sound mapper",
+            "primary sound driver",
+            "default audio device",
+            "primary sound capture driver",
+        ]
+
         seen_names = set()
         row_idx = 0
+        saved_devices = self.config_data.get("devices", {})
 
         for idx, dev in enumerate(devices):
-            # Only pick playback endpoints
-            if dev["max_output_channels"] <= 0:
+            name = dev["name"].strip()
+            name_lower = name.lower()
+
+            if dev["max_output_channels"] <= 0 or any(ign in name_lower for ign in ignored_names):
                 continue
 
-            name = dev["name"]
-            api_name = hostapis[dev["hostapi"]]["name"]
-
-            # Prefer WASAPI if duplicates exist, but accept MME/DirectSound if it's the only one
-            unique_key = f"{name}_{dev['max_output_channels']}"
-            if "WASAPI" in api_name:
-                pass  # Preferred
-            elif unique_key in seen_names:
+            if dev["hostapi"] != self.wasapi_idx:
                 continue
 
-            seen_names.add(unique_key)
+            if name_lower in seen_names:
+                continue
+            seen_names.add(name_lower)
+
             channels = min(2, dev["max_output_channels"])
             connected = self.engine.probe_device(idx, channels)
             is_default = (idx == default_out)
+            is_speaker = not any(k in name_lower for k in bt_keys)
 
-            saved = self.config_data.get(
-                name, {"selected": False, "volume": 1.0, "delay": 0, "pan": 0.0}
+            saved = saved_devices.get(
+                name, {"selected": False, "volume": 1.0, "delay": 0, "pan": 0.0, "muted": False, "alias": ""}
             )
+
+            display_name = saved.get("alias") if saved.get("alias") else name
 
             card = ctk.CTkFrame(
                 self.scrollable,
@@ -231,64 +254,103 @@ class ModernAudioRouterApp(ctk.CTk):
             vol_var = ctk.DoubleVar(value=saved["volume"])
             delay_var = ctk.IntVar(value=saved["delay"])
             pan_var = ctk.DoubleVar(value=saved.get("pan", 0.0))
+            muted_var = ctk.BooleanVar(value=saved.get("muted", False))
 
-            badge = "🎧 Bluetooth" if any(k in name.lower() for k in bt_keys) else "🔊 Speaker"
+            badge = "🔊 Speaker" if is_speaker else "🎧 Bluetooth"
             if is_default:
                 badge += " • Default"
             if not connected:
                 badge += " (Disconnected)"
 
-            # Switch & Tone
+            head_row = ctk.CTkFrame(card, fg_color="transparent")
+            head_row.grid(row=0, column=0, columnspan=3, padx=10, pady=(8, 4), sticky="ew")
+            head_row.grid_columnconfigure(1, weight=1)
+
             chk = ctk.CTkSwitch(
-                card,
-                text=f"{badge}  {name}",
+                head_row,
+                text=f"{badge}  {display_name}",
                 font=ctk.CTkFont(size=11, weight="bold" if connected else "normal"),
                 variable=chk_var,
                 state="normal" if connected else "disabled",
                 command=self._on_setting_changed,
             )
-            chk.grid(row=0, column=0, padx=10, pady=(8, 4), sticky="w")
+            chk.grid(row=0, column=0, sticky="w")
 
-            dev_vu = ctk.CTkProgressBar(card, width=70, height=4, corner_radius=2, progress_color="#00BCF2")
-            dev_vu.grid(row=0, column=1, padx=6, pady=(8, 4), sticky="e")
+            btn_rename = ctk.CTkButton(
+                head_row,
+                text="✏",
+                width=24,
+                height=20,
+                font=ctk.CTkFont(size=10),
+                fg_color="#333333",
+                hover_color="#444444",
+                command=lambda orig=name, c=chk, b=badge: self._edit_device_nickname(orig, c, b),
+            )
+            btn_rename.grid(row=0, column=1, padx=(6, 0), sticky="w")
+
+            dev_vu = ctk.CTkProgressBar(head_row, width=60, height=4, corner_radius=2, progress_color="#00BCF2")
+            dev_vu.grid(row=0, column=2, padx=6, sticky="e")
             dev_vu.set(0.0)
 
-            btn_test = ctk.CTkButton(
-                card,
-                text="♪ Test",
-                width=60,
+            btn_sync = ctk.CTkButton(
+                head_row,
+                text="⚡ Sync",
+                width=54,
                 height=22,
-                corner_radius=6,
+                corner_radius=4,
+                font=ctk.CTkFont(size=10),
+                fg_color="#005B94",
+                hover_color="#0072B8",
+                state="normal" if connected else "disabled",
+                command=lambda i=idx, n=display_name, d=delay_var: self._open_sync_wizard(i, n, d),
+            )
+            btn_sync.grid(row=0, column=3, padx=(0, 4), sticky="e")
+
+            btn_test = ctk.CTkButton(
+                head_row,
+                text="♪ Test",
+                width=50,
+                height=22,
+                corner_radius=4,
                 font=ctk.CTkFont(size=10),
                 fg_color="#3A3A3A",
                 hover_color="#4A4A4A",
                 state="normal" if connected else "disabled",
                 command=lambda i=idx, ch=channels: play_test_chime(i, ch),
             )
-            btn_test.grid(row=0, column=2, padx=10, pady=(8, 4), sticky="e")
+            btn_test.grid(row=0, column=4, sticky="e")
 
-            # Sliders
             ctrl_frame = ctk.CTkFrame(card, fg_color="transparent")
             ctrl_frame.grid(row=1, column=0, columnspan=3, padx=10, pady=(0, 8), sticky="ew")
             ctrl_frame.grid_columnconfigure(1, weight=1)
             ctrl_frame.grid_columnconfigure(3, weight=1)
             ctrl_frame.grid_columnconfigure(5, weight=1)
 
-            # Vol
-            ctk.CTkLabel(ctrl_frame, text="Vol", font=ctk.CTkFont(size=10), text_color="#A0A0A0").grid(row=0, column=0, padx=(0, 4))
+            btn_mute = ctk.CTkButton(
+                ctrl_frame,
+                text="🔇" if muted_var.get() else "🔊",
+                width=24,
+                height=22,
+                fg_color="transparent",
+                hover_color="#333333",
+                font=ctk.CTkFont(size=12),
+                command=lambda i=idx, m=muted_var: self._toggle_device_mute(i, m),
+            )
+            btn_mute.grid(row=0, column=0, padx=(0, 4))
+
             vol_slider = ctk.CTkSlider(
                 ctrl_frame,
                 from_=0.0,
                 to=1.5,
                 variable=vol_var,
                 height=12,
-                width=90,
+                width=85,
                 state="normal" if connected else "disabled",
                 command=lambda val, i=idx: self._on_param_slider(i),
             )
             vol_slider.grid(row=0, column=1, padx=(0, 8), sticky="ew")
+            vol_slider.bind("<Double-Button-1>", lambda e, v=vol_var, i=idx: self._reset_slider(v, 1.0, i))
 
-            # Balance
             ctk.CTkLabel(ctrl_frame, text="Bal", font=ctk.CTkFont(size=10), text_color="#A0A0A0").grid(row=0, column=2, padx=(0, 4))
             pan_slider = ctk.CTkSlider(
                 ctrl_frame,
@@ -296,13 +358,13 @@ class ModernAudioRouterApp(ctk.CTk):
                 to=1.0,
                 variable=pan_var,
                 height=12,
-                width=70,
+                width=65,
                 state="normal" if connected else "disabled",
                 command=lambda val, i=idx: self._on_param_slider(i),
             )
             pan_slider.grid(row=0, column=3, padx=(0, 8), sticky="ew")
+            pan_slider.bind("<Double-Button-1>", lambda e, v=pan_var, i=idx: self._reset_slider(v, 0.0, i))
 
-            # Delay
             ctk.CTkLabel(ctrl_frame, text="Delay", font=ctk.CTkFont(size=10), text_color="#A0A0A0").grid(row=0, column=4, padx=(0, 4))
             lbl_delay = ctk.CTkLabel(
                 ctrl_frame, text=f"{delay_var.get()}ms", font=ctk.CTkFont(size=10, weight="bold"), text_color="#00BCF2", width=36
@@ -315,21 +377,19 @@ class ModernAudioRouterApp(ctk.CTk):
                 to=300,
                 variable=delay_var,
                 height=12,
-                width=90,
+                width=85,
                 state="normal" if connected else "disabled",
                 command=lambda val, i=idx, l=lbl_delay, v=delay_var: self._on_delay_slider(i, l, v),
             )
             delay_slider.grid(row=0, column=6, padx=(0, 6), sticky="ew")
 
-            # Latency Presets
             preset_frame = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
             preset_frame.grid(row=0, column=7, sticky="e")
-
             for ms, label in [(0, "0ms"), (120, "120ms"), (200, "200ms")]:
-                btn_p = ctk.CTkButton(
+                ctk.CTkButton(
                     preset_frame,
                     text=label,
-                    width=36,
+                    width=34,
                     height=18,
                     corner_radius=4,
                     font=ctk.CTkFont(size=9),
@@ -337,177 +397,53 @@ class ModernAudioRouterApp(ctk.CTk):
                     hover_color="#444444",
                     state="normal" if connected else "disabled",
                     command=lambda v=ms, i=idx, l=lbl_delay, d=delay_var: self._apply_preset(i, l, d, v),
-                )
-                btn_p.pack(side="left", padx=1)
+                ).pack(side="left", padx=1)
 
             self.device_cards[idx] = {
                 "name": name,
+                "display_name": display_name,
+                "is_speaker": is_speaker,
                 "channels": channels,
                 "connected": connected,
                 "selected": chk_var,
                 "volume": vol_var,
                 "delay": delay_var,
                 "pan": pan_var,
+                "muted": muted_var,
+                "mute_btn": btn_mute,
                 "vu_meter": dev_vu,
             }
-        if self.engine.is_routing:
-            return
 
-        for w in self.scrollable.winfo_children():
-            w.destroy()
+    def _reset_slider(self, var, value, device_id):
+        var.set(value)
+        self._on_param_slider(device_id)
 
-        self.device_cards.clear()
-        devices = sd.query_devices()
-        self.last_known_devices = [d["name"] for d in devices]
-        default_out = sd.default.device[1]
-        bt_keys = ["bluetooth", "hands-free", "airpods", "buds", "wireless", "headset", "headphones"]
+    def _toggle_device_mute(self, device_id, muted_var):
+        new_state = not muted_var.get()
+        muted_var.set(new_state)
+        btn = self.device_cards[device_id]["mute_btn"]
+        btn.configure(text="🔇" if new_state else "🔊")
+        self._on_param_slider(device_id)
 
-        row_idx = 0
-        for idx, dev in enumerate(devices):
-            if dev["hostapi"] == self.wasapi_idx and dev["max_output_channels"] > 0:
-                name = dev["name"]
-                channels = min(2, dev["max_output_channels"])
-                connected = self.engine.probe_device(idx, channels)
-                is_default = idx == default_out
+    def _edit_device_nickname(self, orig_name, switch_widget, badge):
+        new_alias = simpledialog.askstring("Device Nickname", f"Enter custom alias for:\n{orig_name}")
+        if new_alias is not None:
+            new_alias = new_alias.strip()
+            switch_widget.configure(text=f"{badge}  {new_alias if new_alias else orig_name}")
+            if "devices" not in self.config_data:
+                self.config_data["devices"] = {}
+            if orig_name not in self.config_data["devices"]:
+                self.config_data["devices"][orig_name] = {}
+            self.config_data["devices"][orig_name]["alias"] = new_alias
+            save_config(self.config_data)
 
-                saved = self.config_data.get(
-                    name, {"selected": False, "volume": 1.0, "delay": 0, "pan": 0.0}
-                )
+    def _open_sync_wizard(self, device_id, device_name, delay_var):
+        def _on_sync_done(ms):
+            delay_var.set(ms)
+            self._on_param_slider(device_id)
+            self.refresh_devices()
 
-                card = ctk.CTkFrame(
-                    self.scrollable,
-                    corner_radius=8,
-                    fg_color="#262626" if connected else "#1C1C1C",
-                    border_width=1,
-                    border_color="#333333" if connected else "#242424",
-                )
-                card.grid(row=row_idx, column=0, padx=2, pady=4, sticky="ew")
-                card.grid_columnconfigure(1, weight=1)
-                row_idx += 1
-
-                chk_var = ctk.BooleanVar(value=saved["selected"] if connected else False)
-                vol_var = ctk.DoubleVar(value=saved["volume"])
-                delay_var = ctk.IntVar(value=saved["delay"])
-                pan_var = ctk.DoubleVar(value=saved.get("pan", 0.0))
-
-                badge = "🎧 Bluetooth" if any(k in name.lower() for k in bt_keys) else "🔊 Speaker"
-                if is_default:
-                    badge += " • Default"
-                if not connected:
-                    badge += " (Disconnected)"
-
-                # Row 0: Switch, Mini VU bar, Test Tone Button
-                chk = ctk.CTkSwitch(
-                    card,
-                    text=f"{badge}  {name}",
-                    font=ctk.CTkFont(size=11, weight="bold" if connected else "normal"),
-                    variable=chk_var,
-                    state="normal" if connected else "disabled",
-                    command=self._on_setting_changed,
-                )
-                chk.grid(row=0, column=0, padx=10, pady=(8, 4), sticky="w")
-
-                dev_vu = ctk.CTkProgressBar(card, width=70, height=4, corner_radius=2, progress_color="#00BCF2")
-                dev_vu.grid(row=0, column=1, padx=6, pady=(8, 4), sticky="e")
-                dev_vu.set(0.0)
-
-                btn_test = ctk.CTkButton(
-                    card,
-                    text="♪ Test",
-                    width=60,
-                    height=22,
-                    corner_radius=6,
-                    font=ctk.CTkFont(size=10),
-                    fg_color="#3A3A3A",
-                    hover_color="#4A4A4A",
-                    state="normal" if connected else "disabled",
-                    command=lambda i=idx, ch=channels: play_test_chime(i, ch),
-                )
-                btn_test.grid(row=0, column=2, padx=10, pady=(8, 4), sticky="e")
-
-                # Row 1: Volume, Pan Balance, and Latency Presets
-                ctrl_frame = ctk.CTkFrame(card, fg_color="transparent")
-                ctrl_frame.grid(row=1, column=0, columnspan=3, padx=10, pady=(0, 8), sticky="ew")
-                ctrl_frame.grid_columnconfigure(1, weight=1)
-                ctrl_frame.grid_columnconfigure(3, weight=1)
-                ctrl_frame.grid_columnconfigure(5, weight=1)
-
-                # Volume
-                ctk.CTkLabel(ctrl_frame, text="Vol", font=ctk.CTkFont(size=10), text_color="#A0A0A0").grid(row=0, column=0, padx=(0, 4))
-                vol_slider = ctk.CTkSlider(
-                    ctrl_frame,
-                    from_=0.0,
-                    to=1.5,
-                    variable=vol_var,
-                    height=12,
-                    width=90,
-                    state="normal" if connected else "disabled",
-                    command=lambda val, i=idx: self._on_param_slider(i),
-                )
-                vol_slider.grid(row=0, column=1, padx=(0, 8), sticky="ew")
-
-                # Balance (L/R)
-                ctk.CTkLabel(ctrl_frame, text="Bal", font=ctk.CTkFont(size=10), text_color="#A0A0A0").grid(row=0, column=2, padx=(0, 4))
-                pan_slider = ctk.CTkSlider(
-                    ctrl_frame,
-                    from_=-1.0,
-                    to=1.0,
-                    variable=pan_var,
-                    height=12,
-                    width=70,
-                    state="normal" if connected else "disabled",
-                    command=lambda val, i=idx: self._on_param_slider(i),
-                )
-                pan_slider.grid(row=0, column=3, padx=(0, 8), sticky="ew")
-
-                # Delay ms
-                ctk.CTkLabel(ctrl_frame, text="Delay", font=ctk.CTkFont(size=10), text_color="#A0A0A0").grid(row=0, column=4, padx=(0, 4))
-                lbl_delay = ctk.CTkLabel(
-                    ctrl_frame, text=f"{delay_var.get()}ms", font=ctk.CTkFont(size=10, weight="bold"), text_color="#00BCF2", width=36
-                )
-                lbl_delay.grid(row=0, column=5, padx=(0, 4))
-
-                delay_slider = ctk.CTkSlider(
-                    ctrl_frame,
-                    from_=0,
-                    to=300,
-                    variable=delay_var,
-                    height=12,
-                    width=90,
-                    state="normal" if connected else "disabled",
-                    command=lambda val, i=idx, l=lbl_delay, v=delay_var: self._on_delay_slider(i, l, v),
-                )
-                delay_slider.grid(row=0, column=6, padx=(0, 6), sticky="ew")
-
-                # Latency Presets
-                preset_frame = ctk.CTkFrame(ctrl_frame, fg_color="transparent")
-                preset_frame.grid(row=0, column=7, sticky="e")
-
-                for ms, label in [(0, "0ms"), (120, "120ms"), (200, "200ms")]:
-                    btn_p = ctk.CTkButton(
-                        preset_frame,
-                        text=label,
-                        width=36,
-                        height=18,
-                        corner_radius=4,
-                        font=ctk.CTkFont(size=9),
-                        fg_color="#333333",
-                        hover_color="#444444",
-                        state="normal" if connected else "disabled",
-                        command=lambda v=ms, i=idx, l=lbl_delay, d=delay_var: self._apply_preset(i, l, d, v),
-                    )
-                    btn_p.pack(side="left", padx=1)
-
-                self.device_cards[idx] = {
-                    "name": name,
-                    "channels": channels,
-                    "connected": connected,
-                    "selected": chk_var,
-                    "volume": vol_var,
-                    "delay": delay_var,
-                    "pan": pan_var,
-                    "vu_meter": dev_vu,
-                }
+        SyncWizardModal(self, device_id, device_name, _on_sync_done)
 
     def _apply_preset(self, device_id, label, delay_var, value):
         delay_var.set(value)
@@ -516,10 +452,13 @@ class ModernAudioRouterApp(ctk.CTk):
 
     def _on_param_slider(self, device_id):
         ctrls = self.device_cards[device_id]
-        vol = ctrls["volume"].get()
-        delay = ctrls["delay"].get()
-        pan = ctrls["pan"].get()
-        self.engine.update_worker_params(device_id, vol, delay, pan)
+        self.engine.update_worker_params(
+            device_id,
+            ctrls["volume"].get(),
+            ctrls["delay"].get(),
+            ctrls["pan"].get(),
+            ctrls["muted"].get(),
+        )
         self._on_setting_changed()
 
     def _on_delay_slider(self, device_id, label, delay_var):
@@ -528,13 +467,23 @@ class ModernAudioRouterApp(ctk.CTk):
         self._on_param_slider(device_id)
 
     def _on_setting_changed(self):
+        if "devices" not in self.config_data:
+            self.config_data["devices"] = {}
+
         for ctrls in self.device_cards.values():
-            self.config_data[ctrls["name"]] = {
+            name = ctrls["name"]
+            existing_alias = self.config_data["devices"].get(name, {}).get("alias", "")
+            self.config_data["devices"][name] = {
                 "selected": ctrls["selected"].get(),
                 "volume": ctrls["volume"].get(),
                 "delay": ctrls["delay"].get(),
                 "pan": ctrls["pan"].get(),
+                "muted": ctrls["muted"].get(),
+                "alias": existing_alias,
             }
+
+        self.config_data["auto_mute_speakers"] = self.auto_mute_var.get()
+        self.config_data["start_on_boot"] = self.autostart_var.get()
         save_config(self.config_data)
 
     def _auto_poll_devices(self):
@@ -552,8 +501,18 @@ class ModernAudioRouterApp(ctk.CTk):
 
     def start_routing(self):
         targets = []
+        headphones_active = 0
+
+        for ctrls in self.device_cards.values():
+            if ctrls["selected"].get() and ctrls["connected"] and not ctrls["is_speaker"]:
+                headphones_active += 1
+
         for idx, ctrls in self.device_cards.items():
             if ctrls["selected"].get() and ctrls["connected"]:
+                is_muted = ctrls["muted"].get()
+                if self.auto_mute_var.get() and ctrls["is_speaker"] and headphones_active >= 2:
+                    is_muted = True
+
                 targets.append({
                     "id": idx,
                     "name": ctrls["name"],
@@ -561,13 +520,13 @@ class ModernAudioRouterApp(ctk.CTk):
                     "vol": ctrls["volume"].get(),
                     "delay": ctrls["delay"].get(),
                     "pan": ctrls["pan"].get(),
+                    "muted": is_muted,
                 })
 
         if not targets:
             messagebox.showwarning("Warning", "Select at least one connected output device.")
             return
 
-        # Parse selected buffer size
         buf_str = self.cmb_buffer.get().split()[0]
         block_size = int(buf_str) if buf_str.isdigit() else 1024
 

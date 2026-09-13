@@ -34,21 +34,42 @@ def play_test_chime(device_id, channels=2):
     threading.Thread(target=_chime, daemon=True).start()
 
 
+def play_metronome_click(device_id, channels=2):
+    """Produces a sharp 1000 Hz calibration tick for the tap-to-sync tool."""
+    duration = 0.05
+    t = np.linspace(0, duration, int(SAMPLE_RATE * duration), False)
+    tone = 0.4 * np.sin(2 * np.pi * 1000 * t)
+    envelope = np.linspace(1.0, 0.0, len(tone))
+    click_wave = (tone * envelope).astype(np.float32)
+    audio_frame = np.column_stack([click_wave] * channels)
+    try:
+        with sd.OutputStream(
+            device=device_id,
+            samplerate=SAMPLE_RATE,
+            channels=channels,
+            dtype="float32",
+        ) as stream:
+            stream.write(audio_frame)
+    except Exception:
+        pass
+
+
 class DevicePlaybackWorker(threading.Thread):
-    def __init__(self, device_id, name, channels=2, volume=1.0, delay_ms=0, pan=0.0, block_size=1024, on_level=None):
+    def __init__(self, device_id, name, channels=2, volume=1.0, delay_ms=0, pan=0.0, muted=False, block_size=1024, on_level=None):
         super().__init__(daemon=True)
         self.device_id = device_id
         self.name = name
         self.channels = channels
         self.volume = volume
         self.delay_ms = delay_ms
-        self.pan = pan  # -1.0 (Left) to +1.0 (Right)
+        self.pan = pan
+        self.muted = muted
         self.block_size = block_size
         self.on_level = on_level
         self.audio_queue = queue.Queue(maxsize=50)
         self.running = True
 
-        max_delay_samples = int(SAMPLE_RATE * 0.5)  # 500 ms buffer
+        max_delay_samples = int(SAMPLE_RATE * 0.5)
         self.delay_buffer = np.zeros((max_delay_samples, self.channels), dtype=np.float32)
         self.write_cursor = 0
 
@@ -65,30 +86,35 @@ class DevicePlaybackWorker(threading.Thread):
                     try:
                         data = self.audio_queue.get(timeout=0.2)
 
-                        # Match channel layout
-                        if data.shape[1] != self.channels:
-                            if data.shape[1] > self.channels:
-                                data = data[:, :self.channels]
-                            else:
-                                data = np.repeat(data, self.channels // data.shape[1], axis=1)
+                        if self.muted:
+                            data.fill(0.0)
+                        else:
+                            # Match channel layout
+                            if data.shape[1] != self.channels:
+                                if data.shape[1] > self.channels:
+                                    data = data[:, :self.channels]
+                                else:
+                                    data = np.repeat(data, self.channels // data.shape[1], axis=1)
 
-                        # Software volume
-                        if self.volume != 1.0:
-                            data = data * self.volume
+                            # Soft-knee saturation limiter prevents clipping distortion above 1.0 gain
+                            if self.volume > 1.0:
+                                data = np.tanh(data * self.volume)
+                            elif self.volume != 1.0:
+                                data = data * self.volume
 
-                        # Stereo Panning (L/R)
-                        if self.channels == 2 and self.pan != 0.0:
-                            left_gain = 1.0 - max(0.0, self.pan)
-                            right_gain = 1.0 + min(0.0, self.pan)
-                            data[:, 0] *= left_gain
-                            data[:, 1] *= right_gain
+                            # Stereo balance panning
+                            if self.channels == 2 and self.pan != 0.0:
+                                left_gain = 1.0 - max(0.0, self.pan)
+                                right_gain = 1.0 + min(0.0, self.pan)
+                                data[:, 0] *= left_gain
+                                data[:, 1] *= right_gain
 
                         # Send per-device RMS back to UI
                         if self.on_level:
                             dev_rms = float(np.sqrt(np.mean(data**2)))
                             self.on_level(self.device_id, dev_rms)
 
-                        # Millisecond latency delay ring buffer
+                        # Circular delay buffer
                         delay_samples = int((self.delay_ms / 1000.0) * SAMPLE_RATE)
                         if delay_samples > 0:
                             n = data.shape[0]
@@ -140,14 +166,19 @@ class AudioRouterEngine:
         self.block_size = 1024
 
     def probe_device(self, device_id, channels=2):
+        for rate in [48000, 44100, 16000]:
+            try:
+                sd.check_output_settings(
+                    device=device_id,
+                    channels=channels,
+                    dtype="float32",
+                    samplerate=rate,
+                )
+                return True
+            except Exception:
+                continue
         try:
-            sd.check_output_settings(
-                device=device_id,
-                channels=channels,
-                dtype="float32",
-                samplerate=SAMPLE_RATE,
-            )
-            return True
+            return sd.query_devices(device_id)["max_output_channels"] > 0
         except Exception:
             return False
 
@@ -162,6 +193,7 @@ class AudioRouterEngine:
                 volume=t["vol"],
                 delay_ms=t["delay"],
                 pan=t["pan"],
+                muted=t["muted"],
                 block_size=self.block_size,
                 on_level=self.on_device_level,
             )
@@ -172,11 +204,12 @@ class AudioRouterEngine:
         self.stream_thread = threading.Thread(target=self._run_loopback, daemon=True)
         self.stream_thread.start()
 
-    def update_worker_params(self, device_id, volume, delay_ms, pan):
+    def update_worker_params(self, device_id, volume, delay_ms, pan, muted):
         if device_id in self.workers:
             self.workers[device_id].volume = volume
             self.workers[device_id].delay_ms = delay_ms
             self.workers[device_id].pan = pan
+            self.workers[device_id].muted = muted
 
     def _run_loopback(self):
         try:
