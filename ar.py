@@ -8,7 +8,6 @@ import numpy as np
 import soundcard as sc
 import sounddevice as sd
 
-# Suppress benign buffer underrun/discontinuity warnings from soundcard
 warnings.filterwarnings("ignore", category=sc.SoundcardRuntimeWarning)
 
 SAMPLE_RATE = 48000
@@ -38,7 +37,6 @@ class DevicePlaybackWorker(threading.Thread):
                     try:
                         data = self.audio_queue.get(timeout=0.2)
 
-                        # Match channel layout
                         if data.shape[1] != self.channels:
                             if data.shape[1] > self.channels:
                                 data = data[:, :self.channels]
@@ -48,7 +46,6 @@ class DevicePlaybackWorker(threading.Thread):
                         if self.volume != 1.0:
                             data = data * self.volume
 
-                        # Ensure array is C-contiguous for PortAudio
                         if not data.flags["C_CONTIGUOUS"]:
                             data = np.ascontiguousarray(data, dtype=np.float32)
 
@@ -73,8 +70,8 @@ class AudioRouterGUI(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Windows Multi-Audio Router")
-        self.geometry("640x580")
-        self.minsize(520, 420)
+        self.geometry("680x600")
+        self.minsize(560, 440)
 
         self.wasapi_idx = self._get_wasapi_index()
         self.workers = {}
@@ -107,7 +104,11 @@ class AudioRouterGUI(tk.Tk):
         )
         self.lbl_status.pack(side=tk.RIGHT, padx=5)
 
-        container = ttk.LabelFrame(self, text="Select Output Targets & Adjust Volume", padding=10)
+        container = ttk.LabelFrame(
+            self, 
+            text="Available Output Targets (Connected endpoints enabled)", 
+            padding=10
+        )
         container.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
 
         canvas = tk.Canvas(container, borderwidth=0, highlightthickness=0)
@@ -132,6 +133,19 @@ class AudioRouterGUI(tk.Tk):
         )
         self.btn_toggle.pack(fill=tk.X, ipady=6)
 
+    def is_device_accessible(self, device_id, channels):
+        """Probes the device to ensure it is actually connected and responsive."""
+        try:
+            sd.check_output_settings(
+                device=device_id,
+                channels=channels,
+                dtype="float32",
+                samplerate=SAMPLE_RATE,
+            )
+            return True
+        except Exception:
+            return False
+
     def refresh_devices(self):
         if self.is_routing:
             messagebox.showwarning("Busy", "Stop audio routing before scanning for new devices.")
@@ -145,6 +159,9 @@ class AudioRouterGUI(tk.Tk):
 
         devices = sd.query_devices()
         bt_keywords = ["bluetooth", "hands-free", "airpods", "buds", "wireless", "headset", "headphones"]
+        
+        # Determine the current default OS playback endpoint
+        default_out_idx = sd.default.device[1]
 
         found_any = False
         for idx, dev in enumerate(devices):
@@ -152,7 +169,23 @@ class AudioRouterGUI(tk.Tk):
                 found_any = True
                 name = dev["name"]
                 is_bt = any(kw in name.lower() for kw in bt_keywords)
-                badge = "[Bluetooth/Headphones]" if is_bt else "[Speakers/System]"
+                channels = min(2, dev["max_output_channels"])
+
+                # Probe connection state
+                connected = self.is_device_accessible(idx, channels)
+                is_default = (idx == default_out_idx)
+
+                # Build descriptive label tags
+                type_tag = "[Bluetooth]" if is_bt else "[Speakers]"
+                if is_default:
+                    type_tag += " [DEFAULT OUTPUT]"
+
+                if not connected:
+                    status_tag = " (Disconnected)"
+                else:
+                    status_tag = ""
+
+                display_text = f"{type_tag} {name}{status_tag}"
 
                 row = ttk.Frame(self.scrollable_frame, padding=4)
                 row.pack(fill=tk.X, expand=True, pady=2)
@@ -160,14 +193,25 @@ class AudioRouterGUI(tk.Tk):
                 chk_var = tk.BooleanVar(value=False)
                 self.device_vars[idx] = chk_var
 
-                chk = ttk.Checkbutton(row, text=f"{badge} {name}", variable=chk_var)
+                chk = ttk.Checkbutton(
+                    row, 
+                    text=display_text, 
+                    variable=chk_var,
+                    state=tk.NORMAL if connected else tk.DISABLED
+                )
                 chk.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
                 vol_var = tk.DoubleVar(value=1.0)
                 self.volume_vars[idx] = vol_var
 
                 vol_slider = ttk.Scale(
-                    row, from_=0.0, to=1.5, variable=vol_var, orient=tk.HORIZONTAL, length=100
+                    row, 
+                    from_=0.0, 
+                    to=1.5, 
+                    variable=vol_var, 
+                    orient=tk.HORIZONTAL, 
+                    length=100,
+                    state=tk.NORMAL if connected else tk.DISABLED
                 )
                 vol_slider.pack(side=tk.RIGHT, padx=5)
 
@@ -181,19 +225,32 @@ class AudioRouterGUI(tk.Tk):
             self.start_routing()
 
     def start_routing(self):
+        # Filter strictly for devices that are both checked and reachable
         selected_ids = [idx for idx, var in self.device_vars.items() if var.get()]
 
         if not selected_ids:
-            messagebox.showwarning("Warning", "Please select at least one output device.")
+            messagebox.showwarning("Warning", "Please select at least one connected output device.")
             return
 
         self.workers.clear()
         devices = sd.query_devices()
 
         for idx in selected_ids:
-            vol = self.volume_vars[idx].get()
             out_channels = min(2, devices[idx]["max_output_channels"])
-            worker = DevicePlaybackWorker(idx, devices[idx]["name"], channels=out_channels, volume=vol)
+            
+            # Final check before creating thread to prevent PaErrorCode -9992
+            if not self.is_device_accessible(idx, out_channels):
+                messagebox.showerror(
+                    "Device Disconnected",
+                    f"Could not reach {devices[idx]['name']}.\nEnsure it is powered on and connected."
+                )
+                self.refresh_devices()
+                return
+
+            vol = self.volume_vars[idx].get()
+            worker = DevicePlaybackWorker(
+                idx, devices[idx]["name"], channels=out_channels, volume=vol
+            )
             self.workers[idx] = worker
             worker.start()
 
@@ -225,7 +282,6 @@ class AudioRouterGUI(tk.Tk):
             with loopback_mic.recorder(samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE) as recorder:
                 while self.is_routing:
                     data = recorder.record(numframes=BLOCK_SIZE)
-                    # Convert to C-contiguous float32 directly upon capture
                     data_float = np.ascontiguousarray(data, dtype=np.float32)
 
                     for idx, worker in self.workers.items():
