@@ -9,16 +9,14 @@ import sounddevice as sd
 warnings.filterwarnings("ignore", category=sc.SoundcardRuntimeWarning)
 
 SAMPLE_RATE = 48000
-BLOCK_SIZE = 1024
 
 
 def play_test_chime(device_id, channels=2):
-    """Generates an immediate 440 Hz test chime on the target device."""
+    """Plays an immediate 440 Hz soft test chime."""
     def _chime():
-        duration = 0.4
+        duration = 0.35
         t = np.linspace(0, duration, int(SAMPLE_RATE * duration), False)
-        tone = 0.3 * np.sin(2 * np.pi * 440 * t)
-        # Apply gentle envelope fade-out to prevent speaker pop
+        tone = 0.25 * np.sin(2 * np.pi * 440 * t)
         envelope = np.linspace(1.0, 0.0, len(tone))
         chime_wave = (tone * envelope).astype(np.float32)
         audio_frame = np.column_stack([chime_wave] * channels)
@@ -31,24 +29,26 @@ def play_test_chime(device_id, channels=2):
             ) as stream:
                 stream.write(audio_frame)
         except Exception as e:
-            print(f"[Chime Error] Could not play test tone on ID {device_id}: {e}")
+            print(f"[Chime Error] ID {device_id}: {e}")
 
     threading.Thread(target=_chime, daemon=True).start()
 
 
 class DevicePlaybackWorker(threading.Thread):
-    def __init__(self, device_id, name, channels=2, volume=1.0, delay_ms=0):
+    def __init__(self, device_id, name, channels=2, volume=1.0, delay_ms=0, pan=0.0, block_size=1024, on_level=None):
         super().__init__(daemon=True)
         self.device_id = device_id
         self.name = name
         self.channels = channels
         self.volume = volume
         self.delay_ms = delay_ms
+        self.pan = pan  # -1.0 (Left) to +1.0 (Right)
+        self.block_size = block_size
+        self.on_level = on_level
         self.audio_queue = queue.Queue(maxsize=50)
         self.running = True
 
-        # Circular buffer for millisecond latency synchronization
-        max_delay_samples = int(SAMPLE_RATE * 0.5)  # Max 500 ms buffer
+        max_delay_samples = int(SAMPLE_RATE * 0.5)  # 500 ms buffer
         self.delay_buffer = np.zeros((max_delay_samples, self.channels), dtype=np.float32)
         self.write_cursor = 0
 
@@ -58,7 +58,7 @@ class DevicePlaybackWorker(threading.Thread):
                 device=self.device_id,
                 samplerate=SAMPLE_RATE,
                 channels=self.channels,
-                blocksize=BLOCK_SIZE,
+                blocksize=self.block_size,
                 dtype="float32",
             ) as stream:
                 while self.running:
@@ -72,10 +72,23 @@ class DevicePlaybackWorker(threading.Thread):
                             else:
                                 data = np.repeat(data, self.channels // data.shape[1], axis=1)
 
+                        # Software volume
                         if self.volume != 1.0:
                             data = data * self.volume
 
-                        # Apply millisecond ring delay
+                        # Stereo Panning (L/R)
+                        if self.channels == 2 and self.pan != 0.0:
+                            left_gain = 1.0 - max(0.0, self.pan)
+                            right_gain = 1.0 + min(0.0, self.pan)
+                            data[:, 0] *= left_gain
+                            data[:, 1] *= right_gain
+
+                        # Send per-device RMS back to UI
+                        if self.on_level:
+                            dev_rms = float(np.sqrt(np.mean(data**2)))
+                            self.on_level(self.device_id, dev_rms)
+
+                        # Millisecond latency delay ring buffer
                         delay_samples = int((self.delay_ms / 1000.0) * SAMPLE_RATE)
                         if delay_samples > 0:
                             n = data.shape[0]
@@ -117,12 +130,14 @@ class DevicePlaybackWorker(threading.Thread):
 
 
 class AudioRouterEngine:
-    def __init__(self, on_level_callback=None, on_error_callback=None):
-        self.on_level = on_level_callback
-        self.on_error = on_error_callback
+    def __init__(self, on_master_level=None, on_device_level=None, on_error=None):
+        self.on_master_level = on_master_level
+        self.on_device_level = on_device_level
+        self.on_error = on_error
         self.workers = {}
         self.is_routing = False
         self.stream_thread = None
+        self.block_size = 1024
 
     def probe_device(self, device_id, channels=2):
         try:
@@ -136,8 +151,8 @@ class AudioRouterEngine:
         except Exception:
             return False
 
-    def start(self, targets):
-        """targets: list of dicts: [{'id': int, 'name': str, 'channels': int, 'vol': float, 'delay': int}]"""
+    def start(self, targets, block_size=1024):
+        self.block_size = block_size
         self.workers.clear()
         for t in targets:
             worker = DevicePlaybackWorker(
@@ -146,6 +161,9 @@ class AudioRouterEngine:
                 channels=t["channels"],
                 volume=t["vol"],
                 delay_ms=t["delay"],
+                pan=t["pan"],
+                block_size=self.block_size,
+                on_level=self.on_device_level,
             )
             self.workers[t["id"]] = worker
             worker.start()
@@ -154,10 +172,11 @@ class AudioRouterEngine:
         self.stream_thread = threading.Thread(target=self._run_loopback, daemon=True)
         self.stream_thread.start()
 
-    def update_worker_params(self, device_id, volume, delay_ms):
+    def update_worker_params(self, device_id, volume, delay_ms, pan):
         if device_id in self.workers:
             self.workers[device_id].volume = volume
             self.workers[device_id].delay_ms = delay_ms
+            self.workers[device_id].pan = pan
 
     def _run_loopback(self):
         try:
@@ -180,14 +199,14 @@ class AudioRouterEngine:
                 else:
                     raise RuntimeError("No active WASAPI loopback audio endpoint found.")
 
-            with loopback_mic.recorder(samplerate=SAMPLE_RATE, blocksize=BLOCK_SIZE) as rec:
+            with loopback_mic.recorder(samplerate=SAMPLE_RATE, blocksize=self.block_size) as rec:
                 while self.is_routing:
-                    data = rec.record(numframes=BLOCK_SIZE)
+                    data = rec.record(numframes=self.block_size)
                     data_float = np.ascontiguousarray(data, dtype=np.float32)
 
-                    if self.on_level:
+                    if self.on_master_level:
                         rms = float(np.sqrt(np.mean(data_float**2)))
-                        self.on_level(rms)
+                        self.on_master_level(rms)
 
                     for worker in self.workers.values():
                         worker.push(data_float)
