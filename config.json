@@ -1,14 +1,20 @@
 {
     "Headphones (oraimo SpaceBuds Neo+)": {
-        "selected": false,
-        "volume": 0.0,
+        "selected": true,
+        "volume": 0.618421052631579,
         "delay": 0,
-        "pan": 0.0
+        "pan": 0.04040404040404044
     },
     "Speakers (Conexant ISST Audio)": {
         "selected": true,
         "volume": 0.11842105263157894,
         "delay": 200,
+        "pan": 0.0
+    },
+    "Headphones (oraimo SpaceBuds Neo)": {
+        "selected": false,
+        "volume": 1.0,
+        "delay": 0,
         "pan": 0.0
     }
 }
