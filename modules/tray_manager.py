@@ -1,9 +1,15 @@
 import os
+import sys
 import threading
 from PIL import Image, ImageDraw
 import pystray
 
-ICON_FILE = "app.ico"
+
+def get_writable_icon_path():
+    """Returns a safe, user-writable directory path for persistent files."""
+    app_data = os.path.join(os.environ.get("APPDATA", os.path.expanduser("~")), "Windows Multi-Audio Router")
+    os.makedirs(app_data, exist_ok=True)
+    return os.path.join(app_data, "app.ico")
 
 
 def generate_app_icon():
@@ -37,15 +43,36 @@ def generate_app_icon():
 
 
 def ensure_icon_exists():
-    """Ensures a multi-size Windows .ico file is available on disk."""
-    if not os.path.exists(ICON_FILE):
-        img = generate_app_icon()
-        img.save(
-            ICON_FILE,
-            format="ICO",
-            sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
-        )
-    return ICON_FILE
+    """Locates the bundled icon or safely saves to user AppData without permission errors."""
+    # 1. First priority: Check PyInstaller bundled temporary root
+    if getattr(sys, "frozen", False) and hasattr(sys, "_MEIPASS"):
+        bundled_path = os.path.join(sys._MEIPASS, "app.ico")
+        if os.path.exists(bundled_path):
+            return bundled_path
+
+    # 2. Second priority: Check next to the executable
+    exe_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+    local_path = os.path.join(exe_dir, "app.ico")
+    if os.path.exists(local_path):
+        return local_path
+
+    # 3. Third priority: Root source project directory
+    if os.path.exists("app.ico"):
+        return os.path.abspath("app.ico")
+
+    # 4. Fallback: Save generated icon into safe user-writable APPDATA
+    writable_path = get_writable_icon_path()
+    if not os.path.exists(writable_path):
+        try:
+            img = generate_app_icon()
+            img.save(
+                writable_path,
+                format="ICO",
+                sizes=[(16, 16), (24, 24), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)],
+            )
+        except Exception as e:
+            print(f"[Icon Save Warning]: {e}")
+    return writable_path
 
 
 class TrayManager:
@@ -55,16 +82,17 @@ class TrayManager:
         self.icon = None
 
     def setup(self):
-        ensure_icon_exists()
-        # Use Image.open on the consistent icon source
-        tray_image = Image.open(ICON_FILE)
+        icon_path = ensure_icon_exists()
+        try:
+            tray_image = Image.open(icon_path)
+        except Exception:
+            tray_image = generate_app_icon()
+
         menu = pystray.Menu(
             pystray.MenuItem("Show Window", self.show_window, default=True),
             pystray.MenuItem("Exit Router", self.quit_app),
         )
-        self.icon = pystray.Icon(
-            "AudioRouter", tray_image, "Windows Multi-Audio Router", menu
-        )
+        self.icon = pystray.Icon("AudioRouter", tray_image, "Windows Multi-Audio Router", menu)
         threading.Thread(target=self.icon.run, daemon=True).start()
 
     def hide_window(self):

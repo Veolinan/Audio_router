@@ -1,0 +1,20 @@
+Windows Multi-Audio Router
+Version 1.1.1
+Developed by Veolinan
+Project URL: https://github.com/Veolinan/Audio_router
+
+About Windows Multi-Audio Router:
+Windows Multi-Audio Router captures your desktop audio via native WASAPI loopback 
+and broadcasts it simultaneously across multiple connected output devices (e.g., 
+laptop speakers, Bluetooth headphones, and USB audio interfaces) with per-device 
+latency synchronization.
+
+Key Features:
+- Stream simultaneous audio to multiple Bluetooth earbuds and speakers
+- Real-time latency sync wizard (tap-to-sync) to eliminate audio drift
+- Soft-knee anti-clipping limiter to protect against distortion
+- Auto-mute internal speakers when two or more headsets connect
+- System tray minimization with global hotkey support (Ctrl + Alt + S)
+
+Administrative access is required to register low-level global hotkeys and install 
+to standard program directories.
